@@ -1,6 +1,6 @@
 ---
 name: ipeds-benchmarking-process
-description: Build, explain, reproduce, or validate an institutional benchmarking workflow using IPEDS data. Use when an agent must retrieve annual IPEDS survey files, union collections across years, interpret IPEDS variables, calculate benchmarking metrics, identify peer institutions, apply k-means/PCA/cosine similarity, or implement the methodology demonstrated by JonPGallegos/Benchmarking-Process.
+description: Build, explain, reproduce, or validate an institutional benchmarking workflow using IPEDS data. Use when an agent must construct NCES/IPEDS URLs, download and extract annual ZIP archives, import survey CSVs, union collections across years, interpret IPEDS variables, calculate benchmarking metrics, identify peer institutions, apply k-means/PCA/cosine similarity, or implement the methodology demonstrated by JonPGallegos/Benchmarking-Process.
 ---
 
 # IPEDS Benchmarking Process
@@ -29,6 +29,8 @@ The committed example covers collection years 2021 through 2024.
 
 ## Retrieve and organize IPEDS data
 
+For an end-to-end or reusable implementation, implement remote import as part of the solution. Do not stop at a loader that assumes CSV files already exist unless the user explicitly requests a local-only pipeline.
+
 For each year and required survey:
 
 1. Generate or confirm the NCES/IPEDS download location.
@@ -45,6 +47,69 @@ The example retrieves:
 - `F{priorYY}{yearYY}_F1A`: finance data for public institutions.
 
 IPEDS access differs across years. The notebook uses direct Data Center ZIP URLs before 2023 and the data-generator endpoint for 2023 onward. Reconfirm current access behavior rather than assuming those URLs remain stable.
+
+### Implement the remote import boundary
+
+Provide a callable API and CLI operation such as `download` or `fetch` that accepts:
+
+- One or more collection years.
+- One or more IPEDS table names or supported survey templates.
+- A destination data root.
+- A configurable base URL when practical.
+- An explicit request timeout and overwrite/cache policy.
+
+Generate table names consistently:
+
+```text
+Completions: C{year}_B
+Directory:   HD{year}
+Finance:     F{prior_yy}{yy}_F1A
+```
+
+Use the access pattern demonstrated by the project:
+
+```text
+Before 2023:
+https://nces.ed.gov/ipeds/datacenter/data/{table}.zip
+
+2023 and later:
+https://nces.ed.gov/ipeds/data-generator?tableName={table}&year={year}
+```
+
+Treat these URL rules as defaults to verify, not permanent guarantees.
+
+Implement retrieval defensively:
+
+1. Use an HTTP client such as `requests` with an explicit timeout.
+2. Follow redirects and call `raise_for_status()` before reading the body.
+3. Validate that the response can be opened as a ZIP archive; raise a useful error for an HTML/error response or corrupt archive.
+4. Match archive member names case-insensitively.
+5. Prefer `{table}_RV.csv` when present; otherwise select `{table}.csv`.
+6. Reject an archive that contains neither expected member.
+7. Read only the selected CSV member or extract it without permitting ZIP path traversal.
+8. Save it canonically as `data/{year}/{table}_RV.csv` or `data/{year}/{table}.csv`.
+9. Avoid leaving partial output after a failed request or write; use a temporary file followed by an atomic rename when downloading to disk.
+10. Return structured provenance including source URL, table, collection year, selected archive member, revision status, retrieval timestamp, and saved path.
+
+Keep downloading separate from dataframe loading so callers can:
+
+- Fetch raw files once and analyze them repeatedly.
+- Run later analysis offline.
+- Substitute cached or manually downloaded files.
+- Test retrieval without running the entire benchmarking pipeline.
+
+Expose a convenient end-to-end workflow that can fetch missing annual files and then call the existing union/metric stages. Make network behavior explicit; do not silently download during an otherwise local operation unless the CLI flag or API call clearly requests it.
+
+Test remote import without depending on live NCES availability. Mock the HTTP client and construct small ZIP archives in memory. Cover:
+
+- Successful standard CSV retrieval.
+- Revised CSV preference when both members exist.
+- Case-insensitive archive member names.
+- Pre-2023 and 2023-or-later URL construction.
+- HTTP errors and timeouts.
+- Invalid ZIP responses.
+- Missing expected CSV members.
+- No partial or overwritten output under the selected cache policy.
 
 ## Union annual collections
 
@@ -228,6 +293,7 @@ Require:
 - No unintended row multiplication after joins.
 - Explicit counts of records excluded by inner joins and filters.
 - Provenance for survey name, collection year, revision status, and download date.
+- For end-to-end implementations, a tested HTTP/ZIP import path rather than only a local CSV loader.
 - Formula checks using hand-calculated examples.
 - Expected units and plausible numeric ranges for every metric.
 - Reference cosine similarity approximately `1`.
